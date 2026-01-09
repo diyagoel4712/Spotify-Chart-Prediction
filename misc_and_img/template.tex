@@ -1,0 +1,541 @@
+\documentclass{article}
+
+% if you need to pass options to natbib, use, e.g.:
+% \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading nips_2016
+%
+% to avoid loading the natbib package, add option nonatbib:
+% \usepackage[nonatbib]{nips_2016}
+
+\PassOptionsToPackage{numbers,sort&compress}{natbib}
+\usepackage[final]{nips_2016} % produce camera-ready copy
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage[hidelinks]{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{todonotes}
+\usepackage{appendix}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{multirow}
+\usepackage{placeins}
+\usepackage{amsmath}
+\usepackage{multicol}
+\usepackage{wrapfig}
+
+\bibliographystyle{unsrt}
+
+\title{Temporal Modelling and Trend Analysis on Spotify}
+
+% The \author macro works with any number of authors. There are two
+% commands used to separate the names and addresses of multiple
+% authors: \And and \AND.
+%
+% Using \And between authors leaves it to LaTeX to determine where to
+% break the lines. Using \AND forces a line break at that point. So,
+% if LaTeX puts 3 of 4 authors names on the first line, and the last
+% on the second line, try using \AND instead of \And before the third
+% author name.
+
+\author{
+  s2806747\\
+  \And
+  s2247837\\
+ \And
+  s2848324\\
+  \And
+  s2889909 \\
+}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+Understanding how musical preferences evolve and predicting a song’s future performance are increasingly important tasks in the age of algorithmic recommendation systems and data-driven music discovery techniques. With streaming platforms like Spotify generating massive volumes of listener data, being able to identify temporary trends in music preferences can offer valuable insights into user behaviour, cultural change, and market dynamics. If we can predict how a song will rank in the short term, we can use it to improve playlist curation, target artist promotion, and improve user's experience of the platform. By combining feature-based trend analysis with predictive modelling, this project aims to offer more clarity on both audience taste and music performance over time.
+
+In this project, we focus on two main goals: predicting how a song will perform on a given day by analysing previous trends (task A) and studying how people’s music preferences change over time via an unsupervised clustering task (task B). Motivated by observations from our exploratory data analysis, we set up the prediction task as a time-sequential regression problem, where we use certain features to estimate the next-day rank of a song. Furthermore, for the unsupervised learning task, we identify clusters of songs within a limited time frame and compare the evolution of these clusters over time to detect changes in listener's streaming patterns.
+
+\section{Background}
+Previous studies have predicted music popularity using audio features, chart history, and social signals, often treating it as a binary classification task (hit or not). Common methods include K-means clustering~\cite{clustering}, SVMs~\cite{SVM}, decision trees~\cite{DecisionTree}, random forests~\cite{RandomForest}, and temporal models~\cite{TimeBasedModel} based on ranking trends and song lifespans. Our project differs by focusing on fine-grained, next-day rank prediction using regression, and by explicitly comparing rolling vs. block-based strategies. It also complements prior work with detailed visual analysis of shifting listener preferences across multiple time scales.
+% \begin{itemize}
+%     \item Other ways of representing data (previous examples: autoencoders, TF-IDF, supervised learned embedding)
+%     \item Visualise representations – can we recognise any clusters? outliers?
+%     \item Do these representations help us decide what model will work better for our task?
+% \end{itemize}
+
+\section{Exploratory data analysis and data preparation}
+
+The dataset we will use a time-sequential dataset containing daily entries for the top 200 songs in the global Spotify charts between 1-1-2017 and 29-05-2023. Each row contains an observation of a song and date, with three categories of descriptive features: audio features (7 numerical features like valence and acousticness), artist descriptors (name and nationality) and performance scores (rank and points). 
+
+ % A first pass through the data confirms that most songs appear only briefly in the charts while a relatively small subset maintain long-term presence reflecting the highly unequal nature of music popularity.
+
+\subsection{Data pre-processing}
+
+We implement some basic cleaning of our dataset by discarding redundant or irrelevant features (such as artist id, nationality and metadata like song URL). After separating the training and test sets (section 3.3), we add four features of our own based only on the training data: an endurance feature that assigns a weight to a song capturing both its rank and how long it has been in the top 200 (Appendix \ref{ap: weighted-endurance}), a ranking derivative feature that tracks the change in trajectory of the song (whether it is rising or falling in the charts), and a column that counts the number of days since a song's last appearance in the dataset. Additionally, as artists are a categorical feature, we assigned a popularity score to each artist based on the performance of their songs and passed in artist information as a numerical feature\footnote{The original idea for passing artist information was by converting them to one-hot vectors~\cite{one-hot}, however, this proved too computationally expensive for a project of our scale.} (Appendix \ref{ap: artist-points}). Scores for different artists were averaged in the case of collaborations. All numerical features (audio features, weighted endurance and artist points) were normalised to have zero mean and unit standard deviation. The final list of features that were retained is available in Appendix \ref{ap: final-feature-list}.
+
+After this preprocessing, duplicate entries for the same song on the same day were removed, reducing the number of rows in our dataset from 651,936 to 467,419. 
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{Images/Rohan/all_features_scaled_by_weekofyear.png}
+    \caption{Normalised scores of numerical features for each week of the year (averaged over all years)}
+    \label{fig:Z-scores_day}
+\end{figure}
+
+\subsection{Exploratory data analysis}
+\label{sec: EDA}
+Fig. ~\ref{fig:Z-scores_day} plots the relative trends of acoustic features over different months of the year, providing a visualisation of how listening patterns change over time (further plots for different granularity over time available in Appendix~\ref{ap: feature}). To further investigate the underlying pattern behind these trends, we will conduct an unsupervised clustering by month and compare the evolution of these clusters over time.
+
+Fig. ~\ref{fig:CorrelationMatrix} shows a Pearson correlation heat map of the main numerical variables and the performance indicator (Rank), indicating moderate direct and inverse correlations between acoustic features (as supported by Fig. ~\ref{fig:Z-scores_day}), but little to no correlation of any individual feature with the rank. This indicates that it is a combination of several features that contribute to a song's popularity, motivating the need for a machine learning based method for our prediction task. Fig. ~\ref{fig:WeightedEndurance} displays the empirical distribution of weighted endurance, showing that most songs occur in the top 200 for a short period of time, with 90\% of the songs having a weighted endurance score below 0.174.
+
+\begin{figure}[h!]
+\centering
+\begin{minipage}{0.45\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{Images/Shyamli/Feature Correlation Matrix.pdf}
+    \caption{Feature correlation matrix}
+    \label{fig:CorrelationMatrix}
+\end{minipage}
+\hfill
+\begin{minipage}{0.45\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{Images/Shyamli/figure2_weighted_endurance.pdf}
+    \caption{Weighted endurance distribution}
+    \label{fig:WeightedEndurance}
+\end{minipage}
+\end{figure}
+
+\subsection{Dimensionality reduction} 
+
+We tried implementing Principal Component Analysis~\cite{PCA}, but since the 95\% explained variance only reduced the number of features by 1 (from 11 features to 10, as shown in Appendix~\ref{ap:pca}), it was not useful for dimensionality reduction. In order to avoid unnecessary loss of quality and interpretability, we did not use these features.
+
+\subsection{Data preparation: test/train split}
+\label{sec: data-preparation}
+
+For task A, we predict the rank of a song as our target feature. The value of said rank is predicted as a real number for accurate model comparison\footnote{Once a model is chosen for deployment, we would round these ranks to the nearest integer value.}. 
+We explore the ability of a model to predict short-term trends as next-day predictions, and compare this against the importance of longer-term streaming patterns.
+
+For our input features for the next-day predictions, we use a fixed history in terms of number of days ($n$) created by a rolling window function of a fixed length over our dataset (sorted chronologically by date), and present a suitable subset of our dataset as a matrix of dimensionality $(200n \times 12)$. To predict the charts on day $n+1$, we present 200 input vectors of dimensionality $(1 \times 11)$, excluding the rank, including 7 acoustic features obtained from the song, and 4 custom features (the values for these custom features are not updated for new entries in the test set, but are obtained from already seen training data to prevent data leakage.) The model will predict the ranks of these 200 songs respective to each other.
+
+For longer-term trends, we use a chronological split (Appendix \ref{ap: train/test}) to create the training/validation/test datasets, rather than a random split, to preserve the temporal nature of the dataset.
+
+For task B, we use the k-means algorithm to cluster our data according to 8 features: the 7 acoustic features and the artist points. All these features are normalised to zero mean and unit variance.
+
+\section{Learning methods}
+
+\subsection{Task A: Regression}
+
+We treat our problem as a time-series forecasting problem. First, we explore short-term dependencies within the data, and attempt to predict the next day's song charts based on a limited fixed history. With this sub-task in mind, we try and implement this through four models: linear regression \cite{LR}, extreme gradient boosting (XGBoost) \cite{XGB}, multi-layer perceptron (MLP)~\cite{MLP} and a recurrent neural network (RNN)~\cite{RNN} using Long Short-Term Memory units (LSTMs)~\cite{LSTM}. 
+
+Linear Regression and XGBoost windowed the entire dataset in a shifting window (window size = n, shift = 1). We compared windows of sizes 30, 60 and 90 days. For the two neural networks, we use a limited number of 100 windows of 90 days due to computational constraints\footnote{A standard T4 GPU on Google Colab took an average run time 27 seconds per window.} instead of windowing over the entire dataset. Further model architectures and hyperparameters are provided in Appendix \ref{ap:architectures}.
+
+For our RNN, instead of predicting a rank, we predicted a change in rank $\Delta R$ and added this delta to the previous rank. This stabilises the regression and removes the “always under-predict top ranks” bias. At inference, we add the predicted delta back to the last known rank and clip results to [1, 200]. This ensures the target is centered near zero, so the loss is not dominated by the long tail of large rank values (Appendix \ref{ap:distorted-tail}), and allows the model to learn smoother transitions as most songs drift only a few positions per day (ascertained by qualitatively analysis random samples of the dataset).
+
+We also compare this against the alternative approach of training a model on a large chunk (~80\%) of our data using only linear regression and XGBoost, to compare the relevance of long-term trends against short-term next-day predictions.
+
+% \subsubsection{Long-term forecasting}
+
+% For this sub-task, we split our entire dataset into roughly an 80/10/10 train/val/test split. We aim to predict 
+% \cite{SelfSupervisedLearning2}
+% \cite{TeacherForcing}
+
+\subsection{Task B: Clustering}
+\label{Sec: clustering-methods}
+
+We use K-means clustering~\cite{kmeans} to group songs together within limited time frames. We compared clusters for each week and each month over our entire dataset. We aimed to choose the number of clusters in order to retain the best correlation with human-perceivable features like genres. This was explored by qualitatively analysing (playing songs and retrieving online information about the song and artist) random samples of 5 songs from each cluster, for each value of $k$ from 2-10. However, this qualitative analysis revealed no such correlation\footnote{As this conclusion was drawn from a qualitative analysis, future work could benefit from comparing clusters quantitatively against genre information extracted using, for example, an API.}. As a result, we chose $k=3$ based on our averaged elbow plot (Appendix \ref{ap: cluster-elbow})\footnote{An alternative considered was using a different value of $k$ for each week/month. Since the appropriate values were always 2 or 3, we stuck to one consistent value for clearer visualisation.}.
+
+Although we expected agglomerative clustering~\cite{agglomerative} to have a better performance for our task, this test was not completed due to computational constraints.
+
+\section{Results and evaluation}
+
+In this section we will present the findings of our simulations, and discuss what they mean.
+% We will present the results in 2 formats -- data tables and figures -- and, since the goal is to compare models and algorithms, we will present multiple of them together before discussing them.
+
+\subsection{Regression}
+
+First, we show our models' performance over the different time windows.
+
+\label{sec: short-term}
+\begin{figure}[h]
+    \centering
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Images/Nacho/Window_30_DoubleHist.png}
+        \caption{Linear regression and XGBoost; 30 days}
+        \label{fig:30window}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Images/Nacho/Window_90_DoubleHist.png}
+        \caption{Linear regression and XGBoost; 90 days}
+        \label{fig:60window}
+    \end{subfigure}
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Images/Diya/Screenshot 2025-11-20 at 09.01.40.png}
+        \caption{MLP Regressor; 90 days}
+        \label{fig:90window}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Images/Diya/Screenshot 2025-11-20 at 09.02.31.png}
+        \caption{RNN with LSTM; 90 days}
+        \label{fig:cumulativewindow}
+    \end{subfigure}
+    \caption{Residuals comparison for the different windows of data training}
+    \label{fig:residuals}
+\end{figure}
+
+Fig. \ref{fig:residuals} compares the difference between the residuals for our four models. We compare the standard deviations of this distributions, which are directly correlated with their root mean squared error (RMSE) (Table~\ref{tab:RMSE}). 
+
+Linear regression performs the worst on our dataset, minimising error by guessing in the middle of the rank, seen in the high counts of $\pm 100$ ranks. Up to a 90-day window (maximum window considered in this project), XGBoost outperforms the MLP model. As we have modelled our problem as a time-series problem, we expect our RNN model to be the best. As seen in Fig. 4(d), our RNN model with LSTMs performs the best with the lowest standard deviation and RMSE score. Appendix \ref{ap: all-results} presents further visualisations of our results including true/predicted rank distributions for all our models\footnote{We were not able to execute the neural network models on all the windows because they are computationally very costly and we did not have time to extract information for all of them.}.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{l || c | c | c | c}
+\toprule
+Model & 30-day window & 60-day window & 90-day window \\
+\midrule
+LR & 53.4175 & 54.2435 & 54.7103 \\
+XGBoost & 21.7054 & 20.0668 & 20.8120 \\
+MLP & - & - & 46.79 \\
+RNN & - & - & 13.22 \\
+
+\bottomrule
+\end{tabular}
+\caption{RMSE for Linear Regression and XGBoost  for each time window or cumulative window.}
+\label{tab:RMSE}
+\end{table}
+
+As we can see in table~\ref{tab:RMSE} and Fig.~\ref{fig:residuals}, our models do not improve dramatically when increasing the time window, which indicates the model does not need much more than 30 training days to reach its optimal state. This can also be seen in Fig.~\ref{fig:rmse_cumulative}, which clearly shows that the RMSE does not have a decreasing tendency for the entire execution. In fact, you can even see the RMSE slightly increase after the first year, which does not happen with the linear regression -- linear regression's RMSE just stays pseudo-constant for the entire dataset. This behaviour of XGBoost is not due to overfitting, since the dataset is continuously changing, but because of the strength of the model.
+
+\begin{figure}
+    \centering
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Images/Nacho/TVT_LR.png}
+        \caption{Residuals comparison for the Train-Validation-Test trial for the linear regression}
+        \label{fig:LR}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Images/Nacho/TVT_XGB.png}
+        \caption{Residuals comparison for the Train-Validation-Test trial for the extreme gradient boosting}
+        \label{fig:XGB}
+    \end{subfigure}
+    \caption{Residuals comparison for the different windows of data training}
+    \label{fig:TVT}
+\end{figure}
+
+To compare the above results with longer-term trends, we take a large section of our dataset (section \ref{ap: train/test}). As shown in Fig.~\ref{fig:TVT}, while the linear regression model randomly guesses (seen as the residual is evenly distributed between 100 and -100 in Fig.~\ref{fig:LR}), our XGBoost reaches decent performance for the training set, which drastically decays on the testing set. This might indicate that the features of the songs we're given do not really translate between songs, which means that songs having similar features do not necessarily perform the same. This is evidence that it's not worth the long execution time to try with our stronger models (RNN and MLP).
+
+Taking it all together, what we find is that the best model to predict a song's performance in a given day is a Recurrent Neural Networks with a windowed dataset. This is because, as seen in Fig.~\ref{fig:Z-scores_day}, people's preferences over songs vary over time, which means the easiest way for our model to understand a day's ranking is to look at their short-term temporal context, and RNNs with LSTM units are the best solution to look at temporally susceptible data.
+
+\subsection{Clustering}
+
+Using $k$-means clustering ($k=3$), we split the songs from each week (200 $\times$ 7) into 3 clusters. As shown in the heatmap in Fig. \ref{fig:cluster-heatmap}, the clusters do not uniquely correspond with any features or combinations thereof. While our clusters are distributed roughly evenly in terms of number of songs (Appendix \ref{ap: cluster-elbow}), we observe that these clusters are not a suitable proxy for human-perceivable features. 
+
+\begin{wrapfigure}{r}{0.6\linewidth}
+    \vspace{-8pt}
+    \includegraphics[width=\linewidth]{Images/Diya/1_cluster_profiles_heatmap.png}    
+    \caption{Correlation of clusters with features}
+    \label{fig:cluster-heatmap}
+    \vspace{-10pt}
+\end{wrapfigure}
+
+Further, a 2-D visualisation of these features using PCA (Appendix \ref{ap: cluster-elbow}) does not show a clear separation between the clusters.
+
+Fig. \ref{fig:clusters-over-time} plots the temporal distribution of the three clusters over the entire dataset. While the clusters show considerable overlap, there are certain peaks in each year where one of the clusters sharply diverges from the other two. This can be seen to correspond, in some cases, with key global occasions such as Christmas and New Year's Day. These sharp changes were also visible in our exploratory data analysis (section \ref{sec: EDA}).
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.8\linewidth]{Images/Diya/4_cluster_temporal_trends.png}
+    \caption{Evolution of clusters over time}
+    \label{fig:clusters-over-time}
+\end{figure}
+
+\section{Limitations and possible improvements}
+
+A key limitation of our project is our inability to accurately map songs that fall off the top 200. Moreover, our project is restricted to the features available: further features such as genre, lyrics or release date could help draw more meaningful patterns. By far, the most crucial limitation of our project was the lack of computational resources in order to implement some ideas. These are mentioned throughout the report as ideas for future work.
+
+\section{Conclusions}
+Across both the tasks in our project, we demonstrate that short-term preferences support modelling tasks that better capture underlying audience tendencies than surface-level patterns. More sophisticated models like RNNs outshine other models by leveraging their ability to capture short-term past histories, which have been shown to be better indicators of future song performance than a longer, more expansive history. Further, while $k$-means did not uncover clusters aligned with stable human-interpretable musical categories, the evolution of the clusters over time provides evidence of meaningful macro-level patterns. Both these tasks thus lead us to conclude that chart performance is governed more by audience preferences than static acoustic attributions, which are well captured by machine learning models, and can thus be utilised for effective prediction to employ in tasks such as marketing and promotions.
+
+
+% SIX PAGES SHOULD END HERE
+
+\newpage
+
+\bibliography{refs.bib}
+\bibliographystyle{plain}
+
+\newpage
+
+\section{Statement of contribution}
+
+\begin{itemize}
+    \item \textbf{S2889909}: I wrote the first main codebase, ideated and polished new features. After a peer advanced the code further, I finished correcting it and preparing the plots for the report. I executed all the cells and troubleshot several possible errors. I organised the report sections, wrote the "Results and discussion" and "Conclusion and possible improvements" sections and helped peers with their own formats and writing. Formatted all figures and references, and added the whole appendix. Added all the BibTeX references and referenced them on the report.
+    \item \textbf{S2247387}: I contributed to the primary ideation, task definition, problem solving and project management. I conducted the k-means clustering task (by weeks and by months) and analysis thereof, and created the second version of the primary codebase for the regression tasks, conducting suitable data cleanup including feature reformatting, reformulating the implementation and logic for custom features, and integrating code written by two other team members for linear regression and XGBoost. I also implemented MLP and RNN models. In the report, I wrote the learning methods section and parts of data preparation, and updated the results for my models. I wrote the interim update and helped refine and integrate everyone's written sections for the final report.
+    \item \textbf{S2806747}: I  developed several key components for the feature engineering and modelling pipeline. I implemented ranking derivative, weighted endurance and artists weight. I also explored alpha smoothing which involved the Laplace smoothing for handling the missing song appearances. I built and tested multiple supervised learning models which includes Random Forest, Gradient Boosting, XG Boost (using both GridSearchCV and RandomizedSearchCV). I also implemented the PCA for analyzing dimensionality reduction. In the report I performed a detailed exploratory data analysis and also generated and interpreted key visualisations including the weighted endurance distribution and the feature correlation matrix.
+    \item \textbf{S2848324}: I wrote the date-processing module using Pandas to extract and standardize the weekday, month, quarter, and week fields using parquet files. I worked on statistics and plotted all normalized z-score graphs using pandas, NumPy, Seaborn, Matplotlib, and MinMaxScaler. In the report, I wrote the introduction, reviewed avalaible literature online and used it to write the background.
+\end{itemize}
+
+\section{AI usage statement}
+
+We used AI to help us ideate and structure the project timeline, as well as spelling and grammar check for the report. AI engines used: ChatGPT and Claude.
+
+\newpage
+
+
+\appendix
+{\Large \textbf{Appendices}}
+\section{Weighted endurance}
+\label{ap: weighted-endurance}
+
+\begin{align*}
+% Difference in days between current and previous date for the same song
+\Delta t_t &= d_t - d_{t-1} \quad &&\text{(Days since last seen)} \\
+% Difference in rank between current and previous ranking of the song
+\Delta r_t &= r_t - r_{t-1} \quad &&\text{(Change in rank)} \\
+% Normalized negative rank change per day to measure ranking velocity
+\delta_t &= -\frac{\Delta r_t}{n-1} \cdot \frac{1}{\Delta t_t} \quad &&\text{(Ranking change normalised by chart size and days)} \\
+% Exponentially weighted moving average (EWMA) of ranking change with smoothing factor alpha
+\mathrm{Endurance}_t &= \alpha \cdot \delta_t + (1-\alpha) \cdot \mathrm{Endurance}_{t-1} \quad &&\text{(Endurance: smoothed ranking derivative)}
+\end{align*}
+
+$\alpha$ is a hyperparameter that determines the relative weight of high-ranking songs against the low-ranking ones.
+
+\section{Artist points}
+\label{ap: artist-points}
+
+\begin{align*}
+% 1. Each record (song) i lists a set of artists (split from comma-separated string)
+&\text{Artists collaborating for song $i$} = \{a_1,\, a_2,\, \ldots,\, a_k\} &\text{(Artists credited on song $i$)} \\[1.5ex]
+% 2. Compute total chart points for each artist (sum across all their appearances)
+ \quad &L_a = \sum_{j\,:\,i \in \text{Songs}}\ \text{Points (Ind. for each Artist/Nat).} &\text{(Lifetime points)} \\
+% 3. For each song, add up lifetime points of all credited artists: this is the song's artist weight
+&\text{Artists\_Weight for song $i$} = \frac{\sum_{a \in \text{Artists}_i} L_a}{k} &\text{(Sum of collaborators' total points for song $i$)}
+\end{align*}
+
+\section{Final features after pre-processing}
+\label{ap: final-feature-list}
+
+The features that our models will learn are:
+
+\begin{multicols}{2}
+\begin{itemize}
+    \item Danceability
+    \item Energy
+    \item Loudness
+    \item Speechiness
+    \item Acousticness
+    \item Instrumentalness
+    \item Valence
+    \item Artist Weight
+    \item Weighted Endurance
+    \item Ranking Derivative
+    \item Days Since Last Seen
+\end{itemize}
+\end{multicols}
+
+\section{Further feature exploration}
+\label{ap: feature}
+In this section, we'll show figures similar to Fig.~\ref{fig:Z-scores_day} but scaled by different time scales. See Fig. \ref{fig:day-score}, \ref{fig:month-z-score}, \ref{fig:quarter-score}.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{Images/Rohan/all_features_scaled_by_day.png}
+    \caption{Relative feature normalised z-score scaled by day}
+    \label{fig:day-score}
+\end{figure}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{Images/Rohan/all_features_scaled_by_month.png}
+    \caption{Relative feature normalised z-score scaled by month}
+    \label{fig:month-z-score}
+\end{figure}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{Images/Rohan/all_features_scaled_by_quarter.png}
+    \caption{Relative feature normalised z-score scaled by quarter}
+    \label{fig:quarter-score}
+\end{figure}
+
+
+
+% \begin{align*}
+% \Delta t_t &= d_t - d_{t-1} \\
+% \Delta r_t &= r_t - r_{t-1} \\
+% \delta_t &= -\frac{\Delta r_t}{n-1} \cdot \frac{1}{\Delta t_t} \\
+% \mathrm{Endurance}_t &= \alpha \cdot \delta_t + (1-\alpha) \cdot \mathrm{Endurance}_{t-1}
+% \end{align*}
+
+\section{PCA explained variance}
+\label{ap:pca}
+Here we include the image that shows the explained variance per number of principal components.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{PCA-explained-variance.jpg}
+    \caption{Principal Component Analysis explained variance}
+    \label{fig:placeholder}
+\end{figure}
+
+\section{Train/val/test split}
+\label{ap: train/test}
+For task A, sub-task 2 (long-term prediction), we employ the following train/val/test split:
+\begin{itemize}
+    \item Training: 01/01/2017 - 30/06/2022 ($\approx85\%$)
+    \item Validation: 31/06/2022 - 31/12/2022 ($\approx8\%$)
+    \item Testing: 01/01/2023 - 29/05/2023($\approx7\%$)
+\end{itemize}
+
+\section{Model architectures and hyperparameters}
+\label{ap:architectures}
+\begin{enumerate}
+    \item \textbf{XGBoost}: number of estimators = 200, max. depth of estimators = 7, tree method = hist., colsample\_bytree = 0.9, subsample = 0.9, learning rate = 0.05, objective = squared loss
+    \item \textbf{MLP}: 4 hidden layers (2048, 1024, 512, 256 ReLU units), num\_epochs = 30, early\_stopping=True, batch\_size=4096, lr = 1.0e-3
+    \item \textbf{RNN}: 2 hidden layers with 128 LSTM units each, batch\_size = 2014, dropout=0.3, lr = 1.0e-3, patience=4, min\_delta=1.0e-3
+\end{enumerate}
+
+\section{Distorted tail for RNN}
+\label{ap:distorted-tail}
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{Images/Diya/distorted_tails.png}
+    \caption{Distorted tail for LSTM}
+    \label{fig:placeholder}
+\end{figure}
+
+
+\section{Clustering}
+\label{ap: cluster-elbow}
+Fig. \ref{fig:cluster-elbow} shows that the ideal value of k on average over all months (individual months indicated by coloured lines) is 3.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{monthly-kmeans-cluster-elbow (1).png}
+    \caption{K-means clustering elbow curve to show variance against number of clusters}
+    \label{fig:cluster-elbow}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{Images/Diya/3_cluster_distribution.png}
+    \caption{Distribution of songs in clusters}
+    \label{fig:placeholder}
+\end{figure}
+
+\section{Other model results}
+\label{ap: all-results}
+In this section we will include the true against predicted ranks of our different models, as well as their individual residual histograms.
+
+\subsection{Linear Regression}
+
+30/60/90 day and cumulative windows
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{Images/Nacho/Appendix/LR_Window_30.png}
+    \caption{Results for the linear regression model in a 30-day window. Left: Predicted versus true rank. Right: Residual histogram}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{Images/Nacho/Appendix/LR_Window_60.png}
+    \caption{Results for the linear regression model in a 60-day window. Left: Predicted versus true rank. Right: Residual histogram}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{Images/Nacho/Appendix/LR_Window_90.png}
+    \caption{Results for the linear regression model in a 90-day window. Left: Predicted versus true rank. Right: Residual histogram}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{Images/Nacho/Appendix/LR_Cumulative.png}
+    \caption{Results for the linear regression model in the cumulative window. Left: Predicted versus true rank. Right: Residual histogram}
+    \label{fig:placeholder}
+\end{figure}
+
+\subsection{Extreme Gradient Boosting}
+30/60/90 day and cumulative windows
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{Images/Nacho/Appendix/XGB_Window_30.png}
+    \caption{Results for the extreme gradient boosting model in a 30-day window. Left: Predicted versus true rank. Right: Residual histogram}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{Images/Nacho/Appendix/XGB_Window_60.png}
+    \caption{Results for the extreme gradient boosting model in a 60-day window. Left: Predicted versus true rank. Right: Residual histogram}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{Images/Nacho/Appendix/XGB_Window_90.png}
+    \caption{Results for the extreme gradient boosting model in a 90-day window. Left: Predicted versus true rank. Right: Residual histogram}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{Images/Nacho/Appendix/XGB_Cumulative.png}
+    \caption{Results for the extreme gradient boosting model in the cumulative window. Left: Predicted versus true rank. Right: Residual histogram}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{Images/Diya/5_pca_visualization.pdf}
+    \caption{PCA visualisation of clusters}
+    \label{fig:placeholder}
+\end{figure}
+\subsection{Cumulative training}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=.8\linewidth]{Images/Nacho/RMSE_Over_Time_Cumulative.png}
+    \caption{Rooted mean squared error over the duration of the cumulative training.}
+    \label{fig:rmse_cumulative}
+\end{figure}
+
+\subsection{MLP}
+
+\subsection{LSTM}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=1\linewidth]{Images/Diya/WhatsApp Image 2025-11-20 at 09.00.21.jpeg}
+    \caption{Results for the MLP Regressor model in a 90-day window. Left: Predicted versus true rank. Right: Residual histogram}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.9\linewidth]{Images/Diya/LSTM_110.png}
+    \caption{Results for RNN model in a 90-day window. Left: Predicted
+versus true rank. Right: Residual histogram}
+    \label{fig:placeholder}
+\end{figure}
+
+\end{document}
